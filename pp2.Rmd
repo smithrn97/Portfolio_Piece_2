@@ -1,0 +1,201 @@
+---
+title: "pp2"
+author: "Rebecca Smith"
+date: "3/2/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In my last portfolio piece, I used Pew Research Center's 59th American Trends Panel Wave. This time, I'm going to be using Pew Research Center's April 2017 Political survey. My goal is to calculate weighted survey estimates (specifically for approval of President Trump) broken down by other variables in the dataset (education, race/ethnicity and generation).
+
+First, I'll load the tidyverse and haven packages.
+
+## Load and Install
+```{r load install, echo=FALSE}
+library(tidyverse)
+library(haven)
+```
+
+Next, I'll import the dataset using haven's read_sav() function. I'm going to set user_na = TRUE in order to ensure that responses like "Don't know" or "Refused" aren't converted into missing values. I'll also attempt to convert labelled variables into factors so I can work with value labels rather than numeric codes (e.g., "Republican" instead of "1").
+
+## Load Data
+```{r load data}
+Apr17 <- read_sav("~/DataScience/Apr17-public-4.3-update/Apr17 public.sav",
+                  user_na = TRUE) %>% as_factor()
+```
+
+The first question in the survey (q1) asked respondents whether or not they approved of Trump's performance as president thus far. The following question (q1a) asked respondents how strongly they (dis)approved ("very strongly", "not so strongly", "don't know/refused (VOL.)"). I'm going to use these two questions to create a new variable called "trump_approval". I will also use the "fct_relevel" function to order to categories from "Strongly approve" to "Refused". 
+
+## Create trump approval var and relevel
+```{r create relevel}
+Apr17 <- Apr17 %>%
+  mutate(trump_approval = case_when(
+    q1 == "Approve" & q1a == "Very strongly" ~ "strongly approve",
+    q1 == "Approve" & q1a != "Very strongly" ~ "Not strongly approve",
+    q1 == "Disapprove" & q1a == "Very strongly" ~ "Strongly disapprove",
+    q1 == "Disapprove" & q1a != "Very strongly" ~ "Not strongly disapprove",
+    q1 == "Don't know/Refused (VOL.)" | q1a == "Don't know/Refused (VOL.)" ~ "Refused"
+  )
+  %>%
+    fct_relevel("Strongly approve",
+                "Not strongly approve",
+                "Not strongly disapprove",
+                "Strongly disapprove",
+                "Refused"
+                )
+  )
+```
+
+Just to be sure that worked correctly, I'm going to run the table command to verify.
+
+```{r table}
+table(Apr17$trump_approval, Apr17$q1)
+```
+The table shows that 130 respondents did not strongly approve whereas 476 did strongly approve of his performance. Comparatively, 143 respondents said that they did not strongly disapprove of his performance whereas 676 did strongly disapprove. 
+
+With that new trump_approval variable, I want to see how it breaks down according to educational attainment, race/ethnicity, and generation.
+
+The educational attainment variable has 9 categories - to make it easier, I want to try collapsing them into fewer categories.
+
+## collapse edu var into 3 categories
+```{r collapse}
+Apr17 <- Apr17 %>% 
+  mutate(educ_cat = fct_collapse(educ2,
+                                 "High school grad or less" = c(
+                                   "Less than high school (Grades 1-8 or no formal schooling)",
+                                   "High school incomplete (Grades 9-11 or Grade 12 with NO diploma)",                         
+                                   "High school graduate (Grade 12 with diploma or GED certificate)"
+                                 ),
+                                 "Some college" = c(
+                                   "Some college, no degree (includes some community college)",                                
+                                   "Two year associate degree from a college or university"
+                                 ),
+                                 "College grad+" = c(
+                                   "Four year college or university degree/Bachelor's degree (e.g., BS, BA, AB)",              
+                                   "Some postgraduate or professional schooling, no postgraduate degree",                      
+                                   "Postgraduate or professional degree, including master's, doctorate, medical or law degree"
+                                 )))
+```
+
+With these variables, I'm going to try to produce some weighted summaries of the data. To ensure that the estimates are representative of the population, I'll use the survey weights (variable is named "weight") in the dataset. For the total sample, I will try to calculate weighted percentages by adding up the respondent weights for each category and then dividing by the sum of the weights for the entire sample.
+
+## get trump_approval weighted totals
+```{r weighted}
+trump_approval <- Apr17 %>%
+  group_by(trump_approval) %>%
+  summarise(weighted_n = sum(weight))
+```
+
+The code above produces a table with a column for each of the categories in the trump_approval variable and a column for the weighted_n. That column represents the weighted sum of each category in the trump_approval variable.
+
+Now, to show proportions, I'll use the mutate function to add a column called weighted_group_size that represents the sum of the weighted_n. Then, I'll divide weighted_n by weighted_group_size to create a column called weighted_estimate, which should give me weighted proportions.
+
+##get trump_approval weighted proportions
+```{r weighted props}
+trump_approval <- Apr17 %>%
+  ##group by trump_approval to calculated weighted totals by taking the sum of the weights
+  group_by(trump_approval) %>%
+  summarise (weighted_n = sum(weight)) %>%
+  ##add the weighted_group_size to get the total weighted n and
+  ##divide weighted_n by weighted_group_size to get the proportions
+  mutate(weighted_group_size = sum(weighted_n),
+         weighted_estimate = weighted_n / weighted_group_size)
+```
+
+Now, I want the weighted number of respondents that are in each category of educ_cat (remember: "high school grad or less", "some college", "college grad+", and "don't know/refused (vol.)").
+
+## get trump approval by education
+```{trump approval by edu}
+trump_estimates_educ <- Apr17 %>%
+  #group by educ and trump approval to get weighted n's per group
+  group_by(educ_cat, trump_approval) %>%
+  #calculate the total number of people in each answer and education category using survey weights
+  summarise(weighted_n = sum(weight)) %>%
+  #group by education to calculate education category size
+  group_by(educ_cat) %>%
+  #add columns for total group size and the proportion
+  mutate(weighted_group_size = sum(weighted_n),
+         weighted_estimate = weighted_n/weighted_group_size)
+```
+
+Now, I need to reshape the data to use the same procedure to get all of my subgroup summaries at once (i.e., racethn and gen5).
+
+First, I'll select the columns I'm interested in. I will also remain the respondent identifier from psraid to resp_id. 
+## select only columns interested in for analysis
+###rename psraid to resp_id
+```{r rename}
+Apr17 <- Apr17 %>%
+  select(resp_id = psraid, weight, trump_approval, educ_cat, racethn, gen5)
+```
+
+Now, the data needs to be rearranged to calculate the weighted summary stats by each demographic group. I'm going to use a long format so that there are multiple rows per person (e.g., one for each of the demographic variables we want to analyze). The separate demographic columns will be replaced by a pair of columns: the "key" column will be called subgroup_variable and it will identify which demographic variable is associated with that row; the "value" column will be called subgroup and will identify the specific demographic category to which the person belongs. 
+
+##create Apr_17 long with gather
+```{r create}
+Apr17_long <- Apr17 %>%
+  gather(key = subgroup_variable, value = subgroup, educ_cat, racethn, gen5)
+```
+
+After doing this, I'm left with a long dataset of 4,503 rows (or 1,501 respondents x 3 demographic variables).
+
+Now that the data is arranged in the long format, I'll get the weighted summaries for all three subgroup variables by adding another grouping variable. 
+
+##get weighted estimates for every subgroup
+```{r subgroup weighted estimates}
+trump_estimates <- Apr17_long %>%
+  #group by subgroup_variable, subgroup, and trump approval to get weighted n of approval/disapproval for all subgroup cats
+  group_by(subgroup_variable, subgroup, trump_approval) %>%
+  #calculate the total number of people in each answer and education category using survey weights
+  summarise(weighted_n = sum(weight))%>%
+  #group by subgroup only to calculate subgroup category size
+  group_by(subgroup)%>%
+  #add columns for total group size and the proportion
+  mutate(weighted_group_size = sum(weighted_n),
+         weighted_estimate = weighted_n/weighted_group_size)
+```
+
+Because I'm interested in getting the proportions, I can remove the weighted_total and weighted_group_size columns.
+
+#only want proportions so select out total categories
+```{r pull out}
+trump_estimates <- trump_estimates %>%
+  select(-weighted_n, -weighted_group_size)
+```
+
+Now that the data is arranged the way I'd like, let's try to visualize this.
+
+#create plot
+```{r plot}
+trump_estimates %>%
+  ##remove "Refused" category for Trump Approval
+  filter(trump_approval != "Refused") %>%
+  ##remove Refused categories in our subgroup values
+  filter(!(subgroup %in% c("Don't know/Refused (VOL.)", "DK/Ref")))%>%
+  ggplot(
+    aes(
+      x = weighted_estimate,
+      y = subgroup
+    )
+  ) +
+  geom_point() +
+  scale_x_continuous(limits = c(0, .8),
+                     breaks = seq(0, .6, by = .2),
+                     labels = scales::percent(seq(0, .6, by = .2), accuracy = 1)
+  ) +
+  facet_grid(cols = vars(trump_approval),
+             rows = vars(subgroup_variable),
+             scales = "free_y",
+             space = "free"
+             ) +
+  theme_bw() +
+  theme(axis.title.y = element_blank())
+```
+
+Note: Using Pew data as a beginner has been difficult, but I use Pew data constantly in my research. In an effort to fully understand how I can manipulate this data, I did choose to use a guided tutorial. The reference is provided below. 
+
+## References
+Hatley, N. (2020, January 4). Using tidyverse tools with Pew Research Center survey data in R. Medium. https://medium.com/pew-research-center-decoded/using-tidyverse-tools-with-pew-research-center-survey-data-in-r-bdfe61de0909
+
